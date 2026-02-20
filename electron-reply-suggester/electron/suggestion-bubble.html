@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>回复建议</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: rgba(13, 17, 23, 0.94);
+        --panel: rgba(22, 27, 34, 0.94);
+        --border: #30363d;
+        --fg: #e6edf3;
+        --muted: #8b949e;
+        --accent: #2f81f7;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        font-family: "Segoe UI", "Noto Sans SC", sans-serif;
+        background: transparent;
+        color: var(--fg);
+      }
+      .bubble {
+        margin: 10px;
+        height: calc(100% - 20px);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(22, 27, 34, 0.95), rgba(13, 17, 23, 0.95));
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px 10px 8px;
+        border-bottom: 1px solid var(--border);
+        -webkit-app-region: drag;
+      }
+      .title {
+        min-width: 0;
+      }
+      .title strong {
+        display: block;
+        font-size: 13px;
+      }
+      .title span {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .head button {
+        -webkit-app-region: no-drag;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel);
+        color: var(--fg);
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+      .list {
+        padding: 10px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .list::-webkit-scrollbar { width: 0; height: 0; display: none; }
+      .item {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(13, 17, 23, 0.9);
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .text {
+        font-size: 13px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .actions {
+        display: flex;
+        gap: 6px;
+      }
+      .actions button {
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel);
+        color: var(--fg);
+        padding: 4px 8px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .actions .fill {
+        border-color: rgba(47, 129, 247, 0.6);
+        background: rgba(47, 129, 247, 0.16);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bubble">
+      <div class="head">
+        <div class="title">
+          <strong>回复建议</strong>
+          <span id="sessionTitle">等待建议...</span>
+        </div>
+        <button id="closeBtn">隐藏</button>
+      </div>
+      <div class="list" id="list"></div>
+    </div>
+    <script>
+      const titleEl = document.getElementById("sessionTitle");
+      const listEl = document.getElementById("list");
+      const closeBtn = document.getElementById("closeBtn");
+
+      closeBtn.addEventListener("click", () => {
+        window.electronAPI.hideSuggestionBubble();
+      });
+
+      function render(payload) {
+        const title = typeof payload?.title === "string" && payload.title.trim() ? payload.title.trim() : "最新会话";
+        const suggestions = Array.isArray(payload?.suggestions)
+          ? payload.suggestions.map((x) => String(x || "").trim()).filter(Boolean)
+          : [];
+        titleEl.textContent = title;
+        listEl.innerHTML = "";
+        suggestions.forEach((text, idx) => {
+          const item = document.createElement("div");
+          item.className = "item";
+          const textNode = document.createElement("div");
+          textNode.className = "text";
+          textNode.textContent = `${idx + 1}. ${text}`;
+          item.appendChild(textNode);
+
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const copy = document.createElement("button");
+          copy.textContent = "复制";
+          copy.addEventListener("click", () => window.electronAPI.copyText(text));
+          actions.appendChild(copy);
+
+          const fill = document.createElement("button");
+          fill.className = "fill";
+          fill.textContent = "填入主窗口";
+          fill.addEventListener("click", () => window.electronAPI.applySuggestionFromBubble(text));
+          actions.appendChild(fill);
+
+          item.appendChild(actions);
+          listEl.appendChild(item);
+        });
+      }
+
+      window.electronAPI.onSuggestionBubbleUpdate(render);
+    </script>
+  </body>
+</html>

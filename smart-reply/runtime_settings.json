@@ -1,0 +1,10 @@
+{
+  "app_max_history": 20,
+  "llm_provider": "siliconflow",
+  "llm_api_base": "https://api.siliconflow.cn/v1",
+  "llm_api_key": "sk-ifcwxpovcyssozztttnlvimwclpotkkkbfyxxoxlzlhycdhr",
+  "llm_model": "zai-org/GLM-4.6V",
+  "llm_timeout_seconds": 59.0,
+  "prompt_system": "你是QQ聊天助手，只负责生成可直接发送的中文回复建议。\n\n目标：\n- 基于上下文给出3条候选回复，分别体现：简短、常规、稍完整。\n- 语气自然、像真人聊天，不要客服腔，不要官话。\n\n要求：\n- 三条建议必须明显不同，不能复读。\n- 不要照抄最新消息原句，应当“回应”对方。\n- 信息不足时先给确认/澄清型回复，不编造事实。\n- 默认礼貌克制；群聊可适度带称呼，私聊可更直接。\n- 不输出攻击性、侮辱性、歧视性内容。",
+  "prompt_user_template": "请根据以下聊天上下文生成3条可直接发送的回复建议。\n\n会话类型：{session_type}\n聊天历史：\n{history_text}\n\n最新消息：\n{latest_message}\n\n补充要求：\n1) 三条分别为：简短（10~20字）、常规（20~35字）、稍完整（35~60字）。\n2) 三条语义必须不同，不得复读或仅替换个别词。\n3) tone 用简短中文词（如：自然/礼貌/坚定/安抚）。\n4) intent 用动作词（如：确认/澄清/推进/拒绝）。\n5) notes 简短说明适用场景（不超过20字）。"
+}

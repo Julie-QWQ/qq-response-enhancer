@@ -1,0 +1,7 @@
+[app]
+title = "附带智能回复建议功能的简易QQ客户端"
+
+[server]
+host = "127.0.0.1"
+port = 8000
+reload = true

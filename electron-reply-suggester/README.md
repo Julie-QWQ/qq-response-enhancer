@@ -57,7 +57,7 @@ npm run dist
 Prompt 设置：
 
 - 系统提示词
-- 用户提示词模板（支持变量：`{session_type}` `{history_text}` `{latest_message}`）
+- 用户提示词模板（支持变量：`{session_type}` `{history_text}` `{target_message}`）
 
 ## 4. 输入规则
 
@@ -85,3 +85,18 @@ Prompt 设置：
 - 主进程：`electron-reply-suggester/electron/main.cjs`
 - 预加载：`electron-reply-suggester/electron/preload.cjs`
 - 前端主页面：`electron-reply-suggester/src/App.tsx`
+
+## 8. Electron 元配置
+
+项目根目录提供 `config.json`（`electron-reply-suggester/config.json`），用于配置 Electron 元参数。
+
+可配置字段：
+
+- `appName`：应用名（托盘提示、自启动注册名）
+- `mainWindowTitle`：主窗口标题
+- `mainWindowWidth` / `mainWindowHeight`：主窗口默认尺寸
+- `mainWindowMinWidth` / `mainWindowMinHeight`：主窗口最小尺寸
+- `suggestionBubbleTitle`：建议气泡窗口标题
+- `suggestionBubbleWidth` / `suggestionBubbleHeight`：建议气泡窗口尺寸
+
+修改后需要重启 Electron 主进程生效。

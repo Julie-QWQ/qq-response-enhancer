@@ -1,11 +1,28 @@
-﻿const { app, BrowserWindow, Menu, Tray, ipcMain, globalShortcut, Notification, clipboard, nativeImage, dialog, screen } = require("electron");
+const electron = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, globalShortcut, Notification, clipboard, nativeImage, dialog, screen } = electron;
+if (!ipcMain || !app || !BrowserWindow) {
+  throw new Error(
+    "Electron ???????????? ELECTRON_RUN_AS_NODE ?????????? npm run dev / npm run start ????????? ELECTRON_RUN_AS_NODE=1?",
+  );
+}
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 const AutoLaunch = require("auto-launch");
 
-const APP_NAME = "Reply Suggester";
+const META_CONFIG_FILE = "config.json";
+const DEFAULT_META_CONFIG = {
+  appName: "Reply Suggester",
+  mainWindowTitle: "Reply Suggester",
+  mainWindowWidth: 1080,
+  mainWindowHeight: 760,
+  mainWindowMinWidth: 860,
+  mainWindowMinHeight: 620,
+  suggestionBubbleTitle: "回复建议",
+  suggestionBubbleWidth: 320,
+  suggestionBubbleHeight: 420,
+};
 const SETTINGS_FILE = "settings.json";
 const DEFAULT_SETTINGS = {
   wsUrl: "ws://127.0.0.1:8000/ws",
@@ -27,16 +44,63 @@ const DEFAULT_SETTINGS = {
 let mainWindow = null;
 let suggestionBubbleWindow = null;
 let tray = null;
+let metaConfig = { ...DEFAULT_META_CONFIG };
 let currentSettings = { ...DEFAULT_SETTINGS };
 let autoLauncher = null;
 let linuxAutostartFallback = false;
 const inflightSends = new Map();
 const recentSendResults = new Map();
 
+function getMetaConfigPath() {
+  return path.join(__dirname, "..", META_CONFIG_FILE);
+}
+
+function sanitizeMetaConfig(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const asText = (value, fallback) => (typeof value === "string" && value.trim() ? value.trim() : fallback);
+  const asInt = (value, fallback, min, max) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.max(min, Math.min(max, Math.floor(value)));
+  };
+  const appName = asText(src.appName, DEFAULT_META_CONFIG.appName);
+  return {
+    appName,
+    mainWindowTitle: asText(src.mainWindowTitle, appName),
+    mainWindowWidth: asInt(src.mainWindowWidth, DEFAULT_META_CONFIG.mainWindowWidth, 900, 2560),
+    mainWindowHeight: asInt(src.mainWindowHeight, DEFAULT_META_CONFIG.mainWindowHeight, 640, 1600),
+    mainWindowMinWidth: asInt(src.mainWindowMinWidth, DEFAULT_META_CONFIG.mainWindowMinWidth, 760, 2200),
+    mainWindowMinHeight: asInt(src.mainWindowMinHeight, DEFAULT_META_CONFIG.mainWindowMinHeight, 520, 1400),
+    suggestionBubbleTitle: asText(src.suggestionBubbleTitle, DEFAULT_META_CONFIG.suggestionBubbleTitle),
+    suggestionBubbleWidth: asInt(src.suggestionBubbleWidth, DEFAULT_META_CONFIG.suggestionBubbleWidth, 260, 800),
+    suggestionBubbleHeight: asInt(src.suggestionBubbleHeight, DEFAULT_META_CONFIG.suggestionBubbleHeight, 280, 1000),
+  };
+}
+
+function readMetaConfig() {
+  const filePath = getMetaConfigPath();
+  if (!fs.existsSync(filePath)) {
+    console.log(`[meta-config] not found at ${filePath}, using defaults`);
+    fs.writeFileSync(filePath, JSON.stringify(DEFAULT_META_CONFIG, null, 2), "utf-8");
+    return { ...DEFAULT_META_CONFIG };
+  }
+  try {
+    const rawContent = fs.readFileSync(filePath, "utf-8");
+    const content = rawContent.charCodeAt(0) === 0xfeff ? rawContent.slice(1) : rawContent;
+    const parsed = JSON.parse(content);
+    const next = sanitizeMetaConfig(parsed);
+    fs.writeFileSync(filePath, JSON.stringify(next, null, 2), "utf-8");
+    console.log(`[meta-config] loaded from ${filePath}, mainWindowTitle=${next.mainWindowTitle}`);
+    return next;
+  } catch (error) {
+    console.log(`[meta-config] parse failed at ${filePath}, using defaults: ${String(error)}`);
+    return { ...DEFAULT_META_CONFIG };
+  }
+}
+
 function resolveSuggestionBubblePosition() {
   const area = screen.getPrimaryDisplay().workArea;
-  const width = 320;
-  const height = 420;
+  const width = metaConfig.suggestionBubbleWidth;
+  const height = metaConfig.suggestionBubbleHeight;
   const margin = 18;
   return {
     x: Math.max(area.x + margin, area.x + area.width - width - margin),
@@ -208,7 +272,7 @@ function createTray() {
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WwX6j8AAAAASUVORK5CYII="
   );
   tray = new Tray(icon);
-  tray.setToolTip(APP_NAME);
+  tray.setToolTip(metaConfig.appName);
   tray.on("double-click", () => {
     if (!mainWindow) {
       return;
@@ -249,13 +313,18 @@ function registerGlobalShortcut(shortcut) {
 }
 
 function createWindow() {
+  const applyMainWindowTitle = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.setTitle(metaConfig.mainWindowTitle);
+  };
+
   mainWindow = new BrowserWindow({
-    width: 1080,
-    height: 760,
-    minWidth: 860,
-    minHeight: 620,
+    width: metaConfig.mainWindowWidth,
+    height: metaConfig.mainWindowHeight,
+    minWidth: metaConfig.mainWindowMinWidth,
+    minHeight: metaConfig.mainWindowMinHeight,
     resizable: true,
-    title: APP_NAME,
+    title: metaConfig.mainWindowTitle,
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
@@ -271,6 +340,35 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
 
+  mainWindow.webContents.on("did-fail-load", (_event, code, desc, url) => {
+    console.log(`[renderer] did-fail-load code=${code} desc=${desc} url=${url}`);
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.log(`[renderer] render-process-gone reason=${details?.reason || "unknown"}`);
+  });
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    console.log(`[renderer-console] level=${level} ${sourceId || ""}:${line} ${message}`);
+  });
+
+  mainWindow.webContents.on("did-finish-load", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    applyMainWindowTitle();
+    // Keep renderer document.title aligned with window title from config.
+    const safeTitle = JSON.stringify(String(metaConfig.mainWindowTitle || ""));
+    mainWindow.webContents
+      .executeJavaScript(`document.title = ${safeTitle};`, true)
+      .catch(() => undefined);
+  });
+
+  // Keep native window title stable from config.json instead of renderer document.title.
+  mainWindow.on("page-title-updated", (event) => {
+    event.preventDefault();
+    applyMainWindowTitle();
+  });
+
+  mainWindow.on("ready-to-show", applyMainWindowTitle);
+  mainWindow.on("show", applyMainWindowTitle);
+  mainWindow.on("focus", applyMainWindowTitle);
   mainWindow.on("show", () => void buildTrayMenu());
   mainWindow.on("hide", () => void buildTrayMenu());
   mainWindow.on("always-on-top-changed", () => {
@@ -293,7 +391,7 @@ function ensureSuggestionBubbleWindow() {
     minimizable: false,
     maximizable: false,
     closable: true,
-    title: "回复建议",
+    title: metaConfig.suggestionBubbleTitle,
     frame: false,
     alwaysOnTop: true,
     skipTaskbar: true,
@@ -341,6 +439,10 @@ function updateSuggestionBubble(payload) {
 
 ipcMain.handle("settings:get", () => {
   return currentSettings;
+});
+
+ipcMain.handle("meta:get", () => {
+  return { ...metaConfig };
 });
 
 ipcMain.handle("settings:save", async (_event, nextSettings) => {
@@ -510,11 +612,13 @@ async function sendViaBackendRelay({ sessionType, peerId, message, mode, filePat
     return { ok: false, message: "Backend relay unavailable (invalid wsUrl)" };
   }
 
-  const sendMode = String(mode || "text").trim().toLowerCase();
+  const rawMode = String(mode || "text").trim().toLowerCase();
+  const normalizedFilePath = String(filePath || "").trim();
+  const sendMode = rawMode === "text" && normalizedFilePath ? "file" : rawMode;
   let relayTimeoutMs = 22000;
   if (sendMode === "face") {
     relayTimeoutMs = 25000;
-  } else if (sendMode === "image" || sendMode === "video") {
+  } else if (sendMode === "image" || sendMode === "video" || sendMode === "file") {
     relayTimeoutMs = 32000;
   }
 
@@ -528,8 +632,8 @@ async function sendViaBackendRelay({ sessionType, peerId, message, mode, filePat
         session_type: String(sessionType || "private"),
         peer_id: Number(peerId),
         message: String(message || ""),
-        mode: String(mode || "text"),
-        file_path: String(filePath || ""),
+        mode: sendMode,
+        file_path: normalizedFilePath,
         face_id: Number(faceId),
         image_base64: String(imageBase64 || ""),
       }),
@@ -577,13 +681,15 @@ async function sendViaBackendRelay({ sessionType, peerId, message, mode, filePat
 async function sendOneBotMessage({ sessionType, peerId, message, mode, filePath, faceId, imageBase64 }) {
   const baseUrl = String(currentSettings.onebotHttpUrl || "").trim();
   const token = String(currentSettings.onebotAccessToken || "").trim();
-  const sendMode = String(mode || "text").trim().toLowerCase();
+  const rawMode = String(mode || "text").trim().toLowerCase();
+  const normalizedFilePath = String(filePath || "").trim();
+  const sendMode = rawMode === "text" && normalizedFilePath ? "file" : rawMode;
   const rawMessage = String(message || "").trim();
   let content = rawMessage;
   const numericPeerId = Number(peerId);
 
   if (sendMode === "image") {
-    const fp = String(filePath || "").trim();
+    const fp = normalizedFilePath;
     const b64 = String(imageBase64 || "").trim();
     if (b64) {
       content = `[CQ:image,file=base64://${b64}]`;
@@ -593,7 +699,7 @@ async function sendOneBotMessage({ sessionType, peerId, message, mode, filePath,
       return { ok: false, message: "image source is empty" };
     }
   } else if (sendMode === "video") {
-    const fp = String(filePath || "").trim();
+    const fp = normalizedFilePath;
     if (!fp) {
       return { ok: false, message: "video file path is empty" };
     }
@@ -606,7 +712,7 @@ async function sendOneBotMessage({ sessionType, peerId, message, mode, filePath,
     content = `[CQ:face,id=${numericFaceId}]`;
   }
 
-  if (!content) {
+  if (sendMode === "text" && !content) {
     return { ok: false, message: "message is empty" };
   }
   if (!Number.isFinite(numericPeerId) || numericPeerId < 0) {
@@ -785,11 +891,13 @@ ipcMain.handle("media:pickFile", async (_event, kind) => {
   const filters =
     target === "video"
       ? [{ name: "Videos", extensions: ["mp4", "mov", "mkv", "webm", "avi"] }]
-      : [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] }];
+      : target === "file"
+        ? []
+        : [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] }];
 
   const result = await dialog.showOpenDialog({
     properties: ["openFile"],
-    filters,
+    ...(filters.length ? { filters } : {}),
   });
   if (result.canceled || !result.filePaths.length) {
     return null;
@@ -904,7 +1012,7 @@ ipcMain.handle("clipboard:writeText", (_event, value) => {
 ipcMain.handle("notify", (_event, title, body) => {
   try {
     if (Notification.isSupported()) {
-      new Notification({ title: String(title || "Reply Suggester"), body: String(body || "") }).show();
+      new Notification({ title: String(title), body: String(body || "") }).show();
       return true;
     }
   } catch {
@@ -914,8 +1022,10 @@ ipcMain.handle("notify", (_event, title, body) => {
 });
 
 app.whenReady().then(async () => {
+  metaConfig = readMetaConfig();
+  app.setName(metaConfig.appName);
   autoLauncher = new AutoLaunch({
-    name: APP_NAME,
+    name: metaConfig.appName,
     path: process.execPath,
     isHidden: true,
   });

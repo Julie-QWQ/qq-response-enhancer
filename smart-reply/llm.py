@@ -44,7 +44,7 @@ class LLMClient:
         self,
         peer_id: int,
         session_type: str,
-        latest_message: str,
+        target_message: str,
         system_prompt: str,
         user_prompt: str,
     ) -> ReplyPayload:
@@ -58,7 +58,7 @@ class LLMClient:
                 user_prompt=first_prompt,
                 system_prompt=system_prompt,
             )
-            payload = self._filter_echo_suggestions(payload, latest_message)
+            payload = self._filter_echo_suggestions(payload, target_message)
             if not payload.suggestions:
                 raise ValueError("建议均与原消息重复")
             return payload
@@ -69,7 +69,7 @@ class LLMClient:
                 user_prompt=retry_prompt,
                 system_prompt=system_prompt,
             )
-            payload = self._filter_echo_suggestions(payload, latest_message)
+            payload = self._filter_echo_suggestions(payload, target_message)
             if not payload.suggestions:
                 raise ValueError("重试后建议仍与原消息重复")
             return payload
@@ -240,9 +240,9 @@ class LLMClient:
         return t
 
     @classmethod
-    def _is_echo_like(cls, suggestion_text: str, latest_message: str) -> bool:
+    def _is_echo_like(cls, suggestion_text: str, target_message: str) -> bool:
         s = cls._normalize_compare_text(suggestion_text)
-        m = cls._normalize_compare_text(latest_message)
+        m = cls._normalize_compare_text(target_message)
         if not s or not m:
             return False
         if s == m:
@@ -257,6 +257,6 @@ class LLMClient:
         return ratio >= 0.96
 
     @classmethod
-    def _filter_echo_suggestions(cls, payload: ReplyPayload, latest_message: str) -> ReplyPayload:
-        kept = [item for item in payload.suggestions if not cls._is_echo_like(item.text, latest_message)]
+    def _filter_echo_suggestions(cls, payload: ReplyPayload, target_message: str) -> ReplyPayload:
+        kept = [item for item in payload.suggestions if not cls._is_echo_like(item.text, target_message)]
         return payload.model_copy(update={"suggestions": kept})

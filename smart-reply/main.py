@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import sqlite3
 import time
+from urllib.parse import unquote, urlparse
 from collections import deque
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -103,33 +104,50 @@ def _save_runtime_settings(data: dict[str, Any]) -> None:
     )
 
 
-def _build_system_prompt(runtime_cfg: dict[str, Any]) -> str:
-    return str(runtime_cfg.get("prompt_system") or "").strip()
+def _render_history_text(context_messages: list[IncomingMessage]) -> str:
+    history_lines: list[str] = []
+    for msg in context_messages:
+        role_label = "user" if msg.role == "user" else "assistant"
+        history_lines.append(f"{role_label}: {msg.text}")
+    return "\n".join(history_lines)
+
+
+def _build_system_prompt(
+    runtime_cfg: dict[str, Any],
+    *,
+    session_type: str,
+    context_messages: list[IncomingMessage],
+    target_message: str,
+    user_name: str,
+) -> str:
+    template = str(runtime_cfg.get("prompt_system") or "")
+    if not template.strip():
+        return ""
+    history_text = _render_history_text(context_messages)
+    try:
+        return template.format(
+            session_type=session_type,
+            history_text=history_text,
+            target_message=target_message,
+            user_name=user_name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"系统提示词模板格式无效: {exc}") from exc
 
 
 def _render_user_prompt(
     runtime_cfg: dict[str, Any],
     *,
-    session_type: str,
-    context_messages: list[IncomingMessage],
-    latest_message: str,
+    user_prompt_hint: str,
 ) -> str:
-    template = str(runtime_cfg.get("prompt_user_template") or "")
-    history_lines: list[str] = []
-    for msg in context_messages:
-        role_label = "user" if msg.role == "user" else "assistant"
-        history_lines.append(f"{role_label}: {msg.text}")
-    history_text = "\n".join(history_lines)
-    if template.strip():
-        try:
-            return template.format(
-                session_type=session_type,
-                history_text=history_text,
-                latest_message=latest_message,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"用户提示词模板格式无效: {exc}") from exc
-    return latest_message
+    base_prompt = str(runtime_cfg.get("prompt_user_template") or "").strip()
+    hint = user_prompt_hint.strip()
+    parts: list[str] = []
+    if base_prompt:
+        parts.append(base_prompt)
+    if hint:
+        parts.append(f"本次补充要求：\n{hint}")
+    return "\n\n".join(parts).strip() or "请基于系统提示词生成建议。"
 
 
 def _build_llm_client(runtime_cfg: dict[str, Any]) -> LLMClient:
@@ -483,6 +501,26 @@ def normalize_onebot_file_ref(source: str) -> str:
     return value
 
 
+def onebot_upload_file_path(source: str) -> str:
+    value = (source or "").strip()
+    if not value:
+        return value
+    if value.startswith("file://"):
+        parsed = urlparse(value)
+        path_text = unquote(parsed.path or "")
+        if path_text.startswith("/") and len(path_text) >= 3 and path_text[2] == ":":
+            # Windows path like /C:/...
+            path_text = path_text[1:]
+        return path_text
+    candidate = Path(value)
+    if candidate.exists():
+        try:
+            return str(candidate.resolve())
+        except Exception:
+            return str(candidate)
+    return value
+
+
 def _create_send_task(*, mode: str, session_type: str, peer_id: int, file_path: str, message: str) -> dict[str, Any]:
     task_id = f"send-{uuid4().hex}"
     now = time.time()
@@ -699,6 +737,14 @@ def _build_outbound_history_event(
         file_ref = normalize_onebot_file_ref(file_path or message)
         message_payload = [{"type": "video", "data": {"file": file_ref}}]
         raw_message = "[视频]"
+    elif mode == "file":
+        file_ref = normalize_onebot_file_ref(file_path or message)
+        file_name = Path(file_path or message).name if (file_path or message) else ""
+        data = {"file": file_ref}
+        if file_name:
+            data["name"] = file_name
+        message_payload = [{"type": "file", "data": data}]
+        raw_message = f"[文件]{(' ' + file_name) if file_name else ''}"
     elif mode == "face":
         try:
             face_id = int(face_id_raw)
@@ -812,6 +858,29 @@ def _build_context_messages_from_history(
             else:
                 context.append(IncomingMessage(role="user", text=text))
     return context
+
+
+def _infer_user_name_from_history(history_rows: list[dict[str, Any]]) -> str:
+    for row in reversed(history_rows):
+        sender = row.get("sender")
+        sender_obj = sender if isinstance(sender, dict) else {}
+        sender_id_raw = sender_obj.get("user_id", row.get("user_id"))
+        self_id_raw = row.get("self_id")
+        try:
+            sender_id = int(sender_id_raw) if sender_id_raw is not None else -1
+        except Exception:
+            sender_id = -1
+        try:
+            self_id = int(self_id_raw) if self_id_raw is not None else -2
+        except Exception:
+            self_id = -2
+        is_self = sender_id >= 0 and self_id >= 0 and sender_id == self_id
+        if not is_self:
+            continue
+        name = str(sender_obj.get("card") or "").strip() or str(sender_obj.get("nickname") or "").strip()
+        if name:
+            return name
+    return "我"
 
 
 @app.get("/health")
@@ -976,7 +1045,8 @@ async def suggest_reply(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail="会话对象ID无效") from exc
 
-    latest_override = str(payload.get("latest_message") or payload.get("latestMessage") or "").strip()
+    target_override = str(payload.get("target_message") or payload.get("targetMessage") or "").strip()
+    user_prompt_hint = str(payload.get("user_prompt_hint") or payload.get("userPromptHint") or "").strip()
     max_history = _current_max_history()
     history_rows = _db_get_history(session_type=session_type, peer_id=peer_id, limit=max(50, max_history))
     context_messages = _build_context_messages_from_history(
@@ -984,8 +1054,8 @@ async def suggest_reply(payload: dict[str, Any]) -> dict[str, Any]:
         history_rows=history_rows,
         max_items=max(10, max_history),
     )
-    latest_message = latest_override
-    if not latest_message:
+    target_message = target_override
+    if not target_message:
         for row in reversed(history_rows):
             sender = row.get("sender")
             sender_obj = sender if isinstance(sender, dict) else {}
@@ -1010,21 +1080,26 @@ async def suggest_reply(payload: dict[str, Any]) -> dict[str, Any]:
                         or str(sender_obj.get("nickname") or "").strip()
                         or (f"用户{sender_id}" if sender_id >= 0 else "用户")
                     )
-                    latest_message = f"{sender_name}: {text}"
+                    target_message = f"{sender_name}: {text}"
                 else:
-                    latest_message = text
+                    target_message = text
                 break
 
-    if not latest_message:
+    if not target_message:
         raise HTTPException(status_code=400, detail="缺少可用的消息上下文")
+    user_name = _infer_user_name_from_history(history_rows)
 
     client = _build_llm_client(runtime_settings)
-    system_prompt = _build_system_prompt(runtime_settings)
-    user_prompt = _render_user_prompt(
+    system_prompt = _build_system_prompt(
         runtime_settings,
         session_type=session_type,
         context_messages=context_messages,
-        latest_message=latest_message,
+        target_message=target_message,
+        user_name=user_name,
+    )
+    user_prompt = _render_user_prompt(
+        runtime_settings,
+        user_prompt_hint=user_prompt_hint,
     )
     logger.info(
         "[LLM Prompt] session=%s:%s system_prompt=%s user_prompt=%s",
@@ -1037,7 +1112,7 @@ async def suggest_reply(payload: dict[str, Any]) -> dict[str, Any]:
         result = await client.generate(
             peer_id=peer_id,
             session_type=session_type,
-            latest_message=latest_message,
+            target_message=target_message,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
         )
@@ -1066,7 +1141,8 @@ async def suggest_reply_one(payload: dict[str, Any]) -> dict[str, Any]:
         slot = 0
     slot = max(0, min(2, slot))
 
-    latest_override = str(payload.get("latest_message") or payload.get("latestMessage") or "").strip()
+    target_override = str(payload.get("target_message") or payload.get("targetMessage") or "").strip()
+    user_prompt_hint = str(payload.get("user_prompt_hint") or payload.get("userPromptHint") or "").strip()
     max_history = _current_max_history()
     history_rows = _db_get_history(session_type=session_type, peer_id=peer_id, limit=max(50, max_history))
     context_messages = _build_context_messages_from_history(
@@ -1074,8 +1150,8 @@ async def suggest_reply_one(payload: dict[str, Any]) -> dict[str, Any]:
         history_rows=history_rows,
         max_items=max(10, max_history),
     )
-    latest_message = latest_override
-    if not latest_message:
+    target_message = target_override
+    if not target_message:
         for row in reversed(history_rows):
             sender = row.get("sender")
             sender_obj = sender if isinstance(sender, dict) else {}
@@ -1100,13 +1176,14 @@ async def suggest_reply_one(payload: dict[str, Any]) -> dict[str, Any]:
                         or str(sender_obj.get("nickname") or "").strip()
                         or (f"用户{sender_id}" if sender_id >= 0 else "用户")
                     )
-                    latest_message = f"{sender_name}: {text}"
+                    target_message = f"{sender_name}: {text}"
                 else:
-                    latest_message = text
+                    target_message = text
                 break
 
-    if not latest_message:
+    if not target_message:
         raise HTTPException(status_code=400, detail="缺少可用的消息上下文")
+    user_name = _infer_user_name_from_history(history_rows)
 
     slot_hints = [
         "请输出 1 条简洁直接、可立即发送的回复，长度尽量控制在 20 字以内。",
@@ -1115,12 +1192,16 @@ async def suggest_reply_one(payload: dict[str, Any]) -> dict[str, Any]:
     ]
 
     client = _build_llm_client(runtime_settings)
-    system_prompt = _build_system_prompt(runtime_settings)
-    user_prompt = _render_user_prompt(
+    system_prompt = _build_system_prompt(
         runtime_settings,
         session_type=session_type,
         context_messages=context_messages,
-        latest_message=latest_message,
+        target_message=target_message,
+        user_name=user_name,
+    )
+    user_prompt = _render_user_prompt(
+        runtime_settings,
+        user_prompt_hint=user_prompt_hint,
     )
     user_prompt = (
         f"{user_prompt}\n\n[本次生成要求]\n"
@@ -1139,7 +1220,7 @@ async def suggest_reply_one(payload: dict[str, Any]) -> dict[str, Any]:
         result = await client.generate(
             peer_id=peer_id,
             session_type=session_type,
-            latest_message=latest_message,
+            target_message=target_message,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
         )
@@ -1293,6 +1374,60 @@ async def onebot_send_message(payload: dict[str, Any]) -> dict[str, Any]:
             normalized = normalize_onebot_file_ref(source)
             head = f"[CQ:video,file={normalized}]"
             outbound_message = f"{head}{message}" if (message and source != message) else head
+        elif mode == "file":
+            source = file_path or message
+            if not source:
+                raise HTTPException(status_code=400, detail="文件来源为空")
+            upload_path = onebot_upload_file_path(source)
+            file_name = Path(upload_path).name or Path(source).name or "file"
+            if session_type == "group":
+                action = "upload_group_file"
+                params = {"group_id": peer_id, "file": upload_path, "name": file_name}
+            else:
+                action = "upload_private_file"
+                params = {"user_id": peer_id, "file": upload_path, "name": file_name}
+            try:
+                result = await send_onebot_action(action=action, params=params, timeout_seconds=60.0)
+            except asyncio.TimeoutError as exc:
+                raise HTTPException(status_code=504, detail="文件上传超时") from exc
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+            status = result.get("status")
+            retcode = result.get("retcode")
+            message_text = str(result.get("message") or "").strip()
+            wording = str(result.get("wording") or "").strip()
+            failed = (isinstance(status, str) and status != "ok") or (isinstance(retcode, int) and retcode != 0)
+            if failed:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error": "onebot_upload_file_failed",
+                        "mode": mode,
+                        "status": status,
+                        "retcode": retcode,
+                        "message": message_text,
+                        "wording": wording,
+                    },
+                )
+
+            _recent_send_success[send_key] = (time.monotonic(), result)
+            if not send_future.done():
+                send_future.set_result(result)
+            _record_chat_event(
+                _build_outbound_history_event(
+                    session_type=session_type,
+                    peer_id=peer_id,
+                    message=message,
+                    mode=mode,
+                    file_path=file_path,
+                    image_base64=image_base64,
+                    face_id_raw=face_id_raw,
+                )
+            )
+            return {"ok": True, "result": result}
         elif mode == "face":
             try:
                 face_id = int(face_id_raw)
@@ -1315,7 +1450,7 @@ async def onebot_send_message(payload: dict[str, Any]) -> dict[str, Any]:
             params = {"user_id": peer_id, "message": outbound_message}
 
         send_timeout = 15.0
-        if mode in {"image", "video"}:
+        if mode in {"image", "video", "file"}:
             send_timeout = 25.0
         elif mode == "face":
             send_timeout = 18.0

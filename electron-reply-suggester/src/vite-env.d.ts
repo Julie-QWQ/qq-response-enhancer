@@ -1,7 +1,8 @@
-import type { AppSettings, LLMTestResult, RuntimeState, SendMessageRequest, SendMessageResult } from "./types";
+import type { AppSettings, LLMTestResult, MetaConfig, RuntimeState, SendMessageRequest, SendMessageResult } from "./types";
 
 interface ElectronAPI {
   getSettings: () => Promise<AppSettings>;
+  getMetaConfig: () => Promise<MetaConfig>;
   saveSettings: (settings: AppSettings) => Promise<AppSettings>;
   getRuntimeState: () => Promise<RuntimeState>;
   setAlwaysOnTop: (enabled: boolean) => Promise<boolean>;
@@ -15,7 +16,7 @@ interface ElectronAPI {
   updateSuggestionBubble: (payload: { title?: string; suggestions: string[] }) => Promise<boolean>;
   hideSuggestionBubble: () => Promise<boolean>;
   applySuggestionFromBubble: (text: string) => Promise<boolean>;
-  pickMediaFile: (kind: "image" | "video") => Promise<string | null>;
+  pickMediaFile: (kind: "image" | "video" | "file") => Promise<string | null>;
   saveClipboardTemp: (payload: { kind: "image" | "video"; base64: string; mimeType?: string; name?: string }) => Promise<string | null>;
   notify: (title: string, body: string) => Promise<boolean>;
   onRuntimeState: (handler: (state: RuntimeState) => void) => () => void;

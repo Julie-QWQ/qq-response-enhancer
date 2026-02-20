@@ -2,8 +2,8 @@ export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
 export type Sentiment = "positive" | "neutral" | "negative" | "urgent";
 export type SessionType = "private" | "group" | "unknown";
 export type MessageSender = "self" | "peer" | "assistant" | "system";
-export type MessageSegmentKind = "text" | "emoji" | "image" | "video" | "mention" | "reply";
-export type OutboundMessageMode = "text" | "image" | "video" | "face";
+export type MessageSegmentKind = "text" | "emoji" | "image" | "video" | "file" | "mention" | "reply";
+export type OutboundMessageMode = "text" | "image" | "video" | "file" | "face";
 
 export interface Suggestion {
   text: string;
@@ -96,4 +96,16 @@ export interface SendMessageResult {
 export interface LLMTestResult {
   ok: boolean;
   message: string;
+}
+
+export interface MetaConfig {
+  appName: string;
+  mainWindowTitle: string;
+  mainWindowWidth: number;
+  mainWindowHeight: number;
+  mainWindowMinWidth: number;
+  mainWindowMinHeight: number;
+  suggestionBubbleTitle: string;
+  suggestionBubbleWidth: number;
+  suggestionBubbleHeight: number;
 }

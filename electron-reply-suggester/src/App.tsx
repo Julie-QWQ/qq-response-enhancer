@@ -6,6 +6,7 @@ import type {
   ChatSession,
   ConnectionStatus,
   LLMTestResult,
+  MetaConfig,
   OutboundMessageMode,
   ReplyPayload,
   RuntimeState,
@@ -462,6 +463,19 @@ function parseCqTextSegments(text: string, imageProxyBase = ""): ChatMessageSegm
       } else {
         segments.push({ kind: "emoji", text: "[视频]" });
       }
+    } else if (kind === "file" || kind === "document" || kind === "doc") {
+      const rawUrl = (params.get("url") || "").trim();
+      const fileRef = (params.get("file") || "").trim();
+      const name = (params.get("name") || params.get("title") || "").trim();
+      const token = rawUrl || fileRef;
+      const label = `[文件]${name ? ` ${name}` : ""}`;
+      if (/^https?:\/\//.test(token) || token.startsWith("file://")) {
+        segments.push({ kind: "file", url: token, text: label });
+      } else if (token) {
+        segments.push({ kind: "file", text: `[文件] ${token}` });
+      } else {
+        segments.push({ kind: "file", text: "[文件]" });
+      }
     } else if (kind === "face") {
       const id = (params.get("id") || "").trim();
       const faceId = Number(id);
@@ -503,6 +517,11 @@ function buildLocalImagePreviewUrl(filePath: string, wsUrl: string): string {
   if (base) {
     return `${base}/onebot/image_proxy?file=${encodeURIComponent(filePath)}`;
   }
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  return `file:///${encodeURI(normalized)}`;
+}
+
+function buildLocalFileUrl(filePath: string): string {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
   return `file:///${encodeURI(normalized)}`;
 }
@@ -677,6 +696,22 @@ function parseOneBotSegments(
         segments.push({ kind: "video", url: token, text: "[视频]" });
       } else {
         segments.push({ kind: "emoji", text: "[视频]" });
+      }
+      continue;
+    }
+
+    if (segType === "file" || segType === "document" || segType === "doc") {
+      const rawUrl = asText(data.url, asText(data.src, asText(data.path, ""))).trim();
+      const fileRef = asText(data.file, asText(data.file_id, asText(data.fileId, ""))).trim();
+      const name = asText(data.name, asText(data.title, "")).trim();
+      const token = rawUrl || fileRef;
+      const label = `[文件]${name ? ` ${name}` : ""}`;
+      if (/^https?:\/\//.test(token) || token.startsWith("file://")) {
+        segments.push({ kind: "file", url: token, text: label });
+      } else if (token) {
+        segments.push({ kind: "file", text: `[文件] ${token}` });
+      } else {
+        segments.push({ kind: "file", text: "[文件]" });
       }
       continue;
     }
@@ -951,6 +986,7 @@ function buildMessagePreview(message: ChatMessage): string {
     if (seg.kind === "text" && (seg.text || "").trim()) return (seg.text || "").trim();
     if (seg.kind === "image") return "[图片]";
     if (seg.kind === "video") return "[视频]";
+    if (seg.kind === "file") return seg.text || "[文件]";
     if (seg.kind === "emoji" && (seg.text || "").trim()) return (seg.text || "").trim();
   }
   return "(无内容)";
@@ -980,6 +1016,20 @@ function renderSegment(segment: ChatMessageSegment, idx: number) {
       <video key={idx} className="msg-video" src={segment.url} controls preload="metadata">
         你的环境不支持视频播放
       </video>
+    );
+  }
+  if (segment.kind === "file") {
+    if (segment.url) {
+      return (
+        <a key={idx} className="msg-file" href={segment.url} target="_blank" rel="noreferrer">
+          {segment.text || "[文件]"}
+        </a>
+      );
+    }
+    return (
+      <span key={idx} className="msg-file">
+        {segment.text || "[文件]"}
+      </span>
     );
   }
   if (segment.kind === "emoji") {
@@ -1021,6 +1071,7 @@ export default function App() {
     const saved = window.localStorage.getItem("ui_theme");
     return saved === "light" ? "light" : "dark";
   });
+  const [appTitle, setAppTitle] = useState("QQ 消息面板");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [runtimeState, setRuntimeState] = useState<RuntimeState>({
     alwaysOnTop: false,
@@ -1065,6 +1116,41 @@ export default function App() {
   } | null>(null);
   const [avatarErrorMap, setAvatarErrorMap] = useState<Record<string, boolean>>({});
   const [sessionAvatarErrorMap, setSessionAvatarErrorMap] = useState<Record<string, boolean>>({});
+  const [suggestTargetBySession, setSuggestTargetBySession] = useState<
+    Record<string, { messageId: string; text: string; preview: string }>
+  >({});
+  const [suggestPickActive, setSuggestPickActive] = useState(false);
+  const [suggestPickHoverMessageId, setSuggestPickHoverMessageId] = useState<string | null>(null);
+  const [suggestPickArrow, setSuggestPickArrow] = useState<{ top: number; left: number } | null>(null);
+  const [suggestPickLink, setSuggestPickLink] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  const [suggestTargetLink, setSuggestTargetLink] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(
+    null,
+  );
+  const [showSuggestPromptModal, setShowSuggestPromptModal] = useState(false);
+  const [suggestPromptInput, setSuggestPromptInput] = useState("");
+  const [pendingSuggestTarget, setPendingSuggestTarget] = useState<{ sessionId: string; text: string; preview: string } | null>(
+    null,
+  );
+  const [suggestSendOptionsByMessageId, setSuggestSendOptionsByMessageId] = useState<
+    Record<string, { reply: boolean; at: boolean }>
+  >({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.electronAPI
+      .getMetaConfig()
+      .then((meta: MetaConfig) => {
+        if (cancelled) return;
+        const nextTitle = String(meta?.appName || meta?.mainWindowTitle || "").trim();
+        if (nextTitle) {
+          setAppTitle(nextTitle);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!sendError) {
@@ -1081,6 +1167,7 @@ export default function App() {
   const composeRef = useRef<HTMLTextAreaElement | null>(null);
   const promptSystemRef = useRef<HTMLTextAreaElement | null>(null);
   const promptUserTemplateRef = useRef<HTMLTextAreaElement | null>(null);
+  const suggestPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const lastReadMapRef = useRef<Record<string, number>>({});
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -1088,6 +1175,8 @@ export default function App() {
   const reconnectTimerRef = useRef<number | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const chatPanelRef = useRef<HTMLElement | null>(null);
+  const generateBtnRef = useRef<HTMLButtonElement | null>(null);
   const selectedSessionRef = useRef<string | null>(null);
   const sendInFlightRef = useRef(false);
   const videoPollTimerRef = useRef<number | null>(null);
@@ -1095,6 +1184,10 @@ export default function App() {
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const autoScrollEnabledRef = useRef(true);
   const lastSessionIdForScrollRef = useRef<string | null>(null);
+  const suggestPickSessionIdRef = useRef<string | null>(null);
+  const suggestPickStartRef = useRef<{ x: number; y: number } | null>(null);
+  const suggestPickDraggedRef = useRef(false);
+  const suggestPickHoverTargetRef = useRef<{ messageId: string; text: string; preview: string } | null>(null);
 
   useEffect(() => {
     lastReadMapRef.current = loadLastReadMap();
@@ -1149,6 +1242,17 @@ export default function App() {
     autoResizeTextarea(promptUserTemplateRef.current);
   }, [showSettings, settings.promptSystem, settings.promptUserTemplate]);
 
+  useEffect(() => {
+    if (!showSuggestPromptModal) return;
+    requestAnimationFrame(() => {
+      const el = suggestPromptRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      autoResizeTextarea(el, 110);
+    });
+  }, [showSuggestPromptModal]);
+
   const visibleSessions = useMemo(() => {
     const q = sessionSearch.trim().toLowerCase();
     if (!q) {
@@ -1172,6 +1276,50 @@ export default function App() {
     return sessions.find((session) => session.id === selectedSessionId) || null;
   }, [sessions, selectedSessionId]);
   const selectedSuggestBusy = !!(selectedSession && suggestBusyBySession[selectedSession.id]);
+  const selectedSuggestTarget = selectedSession ? suggestTargetBySession[selectedSession.id] || null : null;
+
+  const refreshSuggestTargetLink = () => {
+    if (!selectedSession || !selectedSuggestTarget) {
+      setSuggestTargetLink(null);
+      return;
+    }
+    const panelEl = chatPanelRef.current;
+    const buttonEl = generateBtnRef.current;
+    const listEl = messageListRef.current;
+    if (!panelEl || !buttonEl || !listEl) {
+      setSuggestTargetLink(null);
+      return;
+    }
+    const bubbles = Array.from(listEl.querySelectorAll<HTMLElement>(".bubble[data-message-id]"));
+    const targetBubble = bubbles.find((el) => String(el.dataset.messageId || "") === selectedSuggestTarget.messageId) || null;
+    if (!targetBubble) {
+      setSuggestTargetLink(null);
+      return;
+    }
+
+    const panelRect = panelEl.getBoundingClientRect();
+    const buttonRect = buttonEl.getBoundingClientRect();
+    const bubbleRect = targetBubble.getBoundingClientRect();
+
+    const x1 = buttonRect.left - panelRect.left + buttonRect.width / 2;
+    const y1 = buttonRect.top - panelRect.top + buttonRect.height / 2;
+    const x2 = bubbleRect.left - panelRect.left + Math.min(24, Math.max(14, bubbleRect.width * 0.16));
+    const y2 = bubbleRect.top - panelRect.top + bubbleRect.height / 2;
+    setSuggestTargetLink({ x1, y1, x2, y2 });
+  };
+
+  const getGenerateBtnCenterInPanel = () => {
+    const panelEl = chatPanelRef.current;
+    const btnEl = generateBtnRef.current;
+    if (!panelEl || !btnEl) return null;
+    const panelRect = panelEl.getBoundingClientRect();
+    const rect = btnEl.getBoundingClientRect();
+    return {
+      x: rect.left - panelRect.left + rect.width / 2,
+      y: rect.top - panelRect.top + rect.height / 2,
+      panelRect,
+    };
+  };
 
   const mentionNameMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -1366,10 +1514,182 @@ export default function App() {
     }
   };
 
-  const requestSmartSuggestions = async () => {
+  const buildSuggestionTargetFromMessage = (message: ChatMessage): { messageId: string; text: string; preview: string } => {
+    const text = extractMessageText(message) || buildMessagePreview(message);
+    return {
+      messageId: message.id,
+      text: text.slice(0, 800),
+      preview: buildMessagePreview(message).slice(0, 80),
+    };
+  };
+
+  const pickSuggestionTargetAtPoint = (x: number, y: number) => {
+    const base = getGenerateBtnCenterInPanel();
+    const sessionId = suggestPickSessionIdRef.current;
+    if (!sessionId) {
+      setSuggestPickHoverMessageId(null);
+      setSuggestPickArrow(null);
+      setSuggestPickLink(null);
+      suggestPickHoverTargetRef.current = null;
+      return;
+    }
+    const listEl = messageListRef.current;
+    if (!listEl) {
+      setSuggestPickHoverMessageId(null);
+      setSuggestPickArrow(null);
+      if (base) {
+        setSuggestPickLink({ x1: base.x, y1: base.y, x2: x - base.panelRect.left, y2: y - base.panelRect.top });
+      }
+      suggestPickHoverTargetRef.current = null;
+      return;
+    }
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const bubble = el?.closest(".bubble[data-message-id]") as HTMLElement | null;
+    if (!bubble || !listEl.contains(bubble)) {
+      setSuggestPickHoverMessageId(null);
+      setSuggestPickArrow(null);
+      if (base) {
+        setSuggestPickLink({ x1: base.x, y1: base.y, x2: x - base.panelRect.left, y2: y - base.panelRect.top });
+      }
+      suggestPickHoverTargetRef.current = null;
+      return;
+    }
+
+    const messageId = String(bubble.dataset.messageId || "").trim();
+    if (!messageId) {
+      setSuggestPickHoverMessageId(null);
+      setSuggestPickArrow(null);
+      if (base) {
+        setSuggestPickLink({ x1: base.x, y1: base.y, x2: x - base.panelRect.left, y2: y - base.panelRect.top });
+      }
+      suggestPickHoverTargetRef.current = null;
+      return;
+    }
+
+    const session = sessions.find((s) => s.id === sessionId);
+    const msg = session?.messages.find((m) => m.id === messageId);
+    if (!msg) {
+      setSuggestPickHoverMessageId(null);
+      setSuggestPickArrow(null);
+      if (base) {
+        setSuggestPickLink({ x1: base.x, y1: base.y, x2: x - base.panelRect.left, y2: y - base.panelRect.top });
+      }
+      suggestPickHoverTargetRef.current = null;
+      return;
+    }
+
+    const target = buildSuggestionTargetFromMessage(msg);
+    suggestPickHoverTargetRef.current = target;
+    setSuggestPickHoverMessageId(target.messageId);
+
+    const listRect = listEl.getBoundingClientRect();
+    const bubbleRect = bubble.getBoundingClientRect();
+    const top = bubbleRect.top - listRect.top + bubbleRect.height / 2 - 10;
+    const left = Math.max(4, bubbleRect.left - listRect.left - 22);
+    setSuggestPickArrow({ top, left });
+    if (base) {
+      const x2 = bubbleRect.left - base.panelRect.left + Math.min(24, Math.max(14, bubbleRect.width * 0.16));
+      const y2 = bubbleRect.top - base.panelRect.top + bubbleRect.height / 2;
+      setSuggestPickLink({ x1: base.x, y1: base.y, x2, y2 });
+    }
+  };
+
+  const stopSuggestPick = () => {
+    suggestPickSessionIdRef.current = null;
+    suggestPickStartRef.current = null;
+    suggestPickDraggedRef.current = false;
+    suggestPickHoverTargetRef.current = null;
+    setSuggestPickActive(false);
+    setSuggestPickHoverMessageId(null);
+    setSuggestPickArrow(null);
+    setSuggestPickLink(null);
+  };
+
+  useEffect(() => {
+    if (!suggestPickActive) return;
+    const onPointerMove = (event: PointerEvent) => {
+      const start = suggestPickStartRef.current;
+      if (start) {
+        const dx = event.clientX - start.x;
+        const dy = event.clientY - start.y;
+        if (Math.hypot(dx, dy) >= 6) {
+          suggestPickDraggedRef.current = true;
+        }
+      }
+      if (suggestPickDraggedRef.current) {
+        pickSuggestionTargetAtPoint(event.clientX, event.clientY);
+      }
+    };
+    const onPointerUp = () => {
+      const target = suggestPickHoverTargetRef.current;
+      stopSuggestPick();
+      if (!selectedSession) return;
+      if (target) {
+        setSuggestTargetBySession((prev) => ({
+          ...prev,
+          [selectedSession.id]: target,
+        }));
+        setPendingSuggestTarget({
+          sessionId: selectedSession.id,
+          text: target.text,
+          preview: target.preview,
+        });
+        setSuggestPromptInput(settings.promptUserTemplate || "");
+        setShowSuggestPromptModal(true);
+        return;
+      }
+      setSendError("请先按住“生成建议”并指向一条消息");
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [suggestPickActive, selectedSession, sessions, suggestTargetBySession]);
+
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => refreshSuggestTargetLink());
+    return () => window.cancelAnimationFrame(id);
+  }, [
+    selectedSession?.id,
+    selectedSession?.messages.length,
+    selectedSuggestTarget?.messageId,
+    sessionRenderEpoch[selectedSession?.id || ""],
+  ]);
+
+  useEffect(() => {
+    const onResize = () => refreshSuggestTargetLink();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [selectedSession?.id, selectedSuggestTarget?.messageId]);
+
+  const onGeneratePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!selectedSession || selectedSuggestBusy) return;
+    event.preventDefault();
+    suggestPickSessionIdRef.current = selectedSession.id;
+    suggestPickStartRef.current = { x: event.clientX, y: event.clientY };
+    suggestPickDraggedRef.current = false;
+    suggestPickHoverTargetRef.current = null;
+    setSuggestPickActive(true);
+    setSuggestPickHoverMessageId(null);
+    setSuggestPickArrow(null);
+    const base = getGenerateBtnCenterInPanel();
+    if (base) {
+      setSuggestPickLink({ x1: base.x, y1: base.y, x2: base.x, y2: base.y });
+    } else {
+      setSuggestPickLink(null);
+    }
+  };
+
+  const requestSmartSuggestions = async (targetMessageOverride?: string, userPromptHintOverride?: string) => {
     if (!selectedSession) return;
     const targetSession = selectedSession;
     if (suggestBusyBySession[targetSession.id]) return;
+    const fallbackTarget = suggestTargetBySession[targetSession.id];
+    const targetMessage = (targetMessageOverride || fallbackTarget?.text || "").trim();
+    const userPromptHint = (userPromptHintOverride || "").trim();
     const suggestionBatchId = `suggest-batch-${targetSession.id}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const backendBase = backendBaseFromWsUrl(settings.wsUrl);
     if (!backendBase) {
@@ -1379,6 +1699,13 @@ export default function App() {
     const placeholderIds = Array.from({ length: 3 }, (_, idx) =>
       `suggest-pending-${targetSession.id}-${Date.now()}-${idx}-${Math.random().toString(16).slice(2)}`,
     );
+    setSuggestSendOptionsByMessageId((prev) => {
+      const next = { ...prev };
+      for (const id of placeholderIds) {
+        next[id] = { reply: true, at: false };
+      }
+      return next;
+    });
     setSessions((prev) => {
       let next = prev;
       const baseTs = Date.now();
@@ -1443,6 +1770,8 @@ export default function App() {
             session_type: targetSession.type,
             peer_id: targetSession.peerId,
             slot,
+            target_message: targetMessage || undefined,
+            user_prompt_hint: userPromptHint || undefined,
           }),
         });
 
@@ -1501,6 +1830,24 @@ export default function App() {
     } finally {
       setSuggestBusyBySession((prev) => ({ ...prev, [targetSession.id]: false }));
     }
+  };
+
+  const cancelSuggestPromptModal = () => {
+    setShowSuggestPromptModal(false);
+    setPendingSuggestTarget(null);
+    setSuggestPromptInput("");
+  };
+
+  const confirmSuggestPromptModal = () => {
+    if (!pendingSuggestTarget || !selectedSession || pendingSuggestTarget.sessionId !== selectedSession.id) {
+      setSendError("当前会话已切换，请重新选择目标消息");
+      cancelSuggestPromptModal();
+      return;
+    }
+    const targetText = pendingSuggestTarget.text;
+    const hint = suggestPromptInput.trim();
+    cancelSuggestPromptModal();
+    void requestSmartSuggestions(targetText, hint);
   };
 
   useEffect(() => {
@@ -1983,6 +2330,9 @@ export default function App() {
     if (mode === "image" && !input.filePath && !input.imageBase64) {
       return;
     }
+    if (mode === "file" && !input.filePath) {
+      return;
+    }
     if (mode === "video") {
       if (!input.filePath) {
         return;
@@ -2163,6 +2513,12 @@ export default function App() {
         if (message) {
           localSegments.push({ kind: "text", text: message });
         }
+      } else if (mode === "file" && input.filePath) {
+        const fileName = input.filePath.split(/[\\/]/).pop() || "文件";
+        localSegments.push({ kind: "file", url: buildLocalFileUrl(input.filePath), text: `[文件] ${fileName}` });
+        if (message) {
+          localSegments.push({ kind: "text", text: message });
+        }
       } else if (mode === "face" && Number.isInteger(input.faceId)) {
         localSegments.push({ kind: "emoji", text: buildFaceLabelById(input.faceId) });
         if (message) {
@@ -2238,6 +2594,14 @@ export default function App() {
       return;
     }
     void sendMessage({ mode: "video", filePath: fp });
+  };
+
+  const sendFile = async () => {
+    const fp = await window.electronAPI.pickMediaFile("file");
+    if (!fp) {
+      return;
+    }
+    void sendMessage({ mode: "file", filePath: fp });
   };
 
   const sendFace = async () => {
@@ -2373,7 +2737,7 @@ export default function App() {
 
       <header className="topbar">
         <div className="title-wrap">
-          <h1>QQ 消息面板</h1>
+          <h1>{appTitle}</h1>
           <div className="status-wrap">
             <span className={`status-dot ${status}`} />
             <span className="status-text">{status}</span>
@@ -2449,7 +2813,7 @@ export default function App() {
           </div>
         </aside>
 
-        <section className="chat-panel">
+        <section className="chat-panel" ref={chatPanelRef}>
           {!selectedSession && <div className="chat-empty">请选择左侧会话。收到消息后会自动创建会话。</div>}
 
           {selectedSession && (
@@ -2470,6 +2834,24 @@ export default function App() {
                     <div className="chat-subtitle">
                       {selectedSession.type} · peer_id {selectedSession.peerId}
                     </div>
+                    {selectedSuggestTarget && (
+                      <div className="chat-suggest-target">
+                        建议目标：{selectedSuggestTarget.preview}
+                        <button
+                          type="button"
+                          className="chat-suggest-target-clear"
+                          onClick={() =>
+                            setSuggestTargetBySession((prev) => {
+                              const next = { ...prev };
+                              delete next[selectedSession.id];
+                              return next;
+                            })
+                          }
+                        >
+                          清除
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2481,6 +2863,9 @@ export default function App() {
                   const el = e.currentTarget;
                   const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
                   autoScrollEnabledRef.current = distanceToBottom <= 48;
+                  if (selectedSuggestTarget) {
+                    refreshSuggestTargetLink();
+                  }
                 }}
               >
                 {selectedSession.messages.map((message) => (
@@ -2494,9 +2879,12 @@ export default function App() {
                         "bubble",
                         message.suggestionSelectable ? "bubble-suggestion-selectable" : "",
                         message.suggestionBatchId ? "bubble-suggestion-generated" : "",
+                        suggestPickHoverMessageId === message.id ? "bubble-suggest-pick-hover" : "",
+                        selectedSuggestTarget?.messageId === message.id ? "bubble-suggest-target-pinned" : "",
                       ]
                         .filter(Boolean)
                         .join(" ")}
+                      data-message-id={message.id}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -2507,12 +2895,30 @@ export default function App() {
                           message,
                         });
                       }}
-                      onClick={() => {
+                  onClick={() => {
                         if (!message.suggestionSelectable) return;
                         const text = extractMessageText(message);
                         if (!text) return;
+                        const sendOptions = suggestSendOptionsByMessageId[message.id] || { reply: true, at: false };
+                        const selectedTargetId = selectedSuggestTarget?.messageId;
+                        const selectedTargetMsg = selectedTargetId
+                          ? selectedSession?.messages.find((m) => m.id === selectedTargetId)
+                          : undefined;
+                        const replyMessageId =
+                          sendOptions.reply && selectedTargetMsg ? extractReplyMessageId(selectedTargetMsg) : null;
+                        const mentionQq =
+                          sendOptions.at &&
+                          selectedSession?.type === "group" &&
+                          selectedTargetMsg &&
+                          Number.isInteger(selectedTargetMsg.senderId) &&
+                          (selectedTargetMsg.senderId || -1) > 0
+                            ? String(selectedTargetMsg.senderId)
+                            : "";
                         const batchId = message.suggestionBatchId;
                         if (batchId && selectedSession) {
+                          const removedIds = selectedSession.messages
+                            .filter((m) => m.suggestionBatchId === batchId)
+                            .map((m) => m.id);
                           setSessions((prev) =>
                             prev.map((session) =>
                               session.id === selectedSession.id
@@ -2523,11 +2929,30 @@ export default function App() {
                                 : session,
                             ),
                           );
+                          setSuggestSendOptionsByMessageId((prev) => {
+                            const next = { ...prev };
+                            for (const id of removedIds) {
+                              delete next[id];
+                            }
+                            return next;
+                          });
+                          setSuggestTargetBySession((prev) => {
+                            const next = { ...prev };
+                            delete next[selectedSession.id];
+                            return next;
+                          });
+                        }
+                        let wireText = convertAtAndReplyLabelToCqText(convertFaceLabelToCqText(text));
+                        if (mentionQq) {
+                          wireText = `[CQ:at,qq=${mentionQq}]${wireText}`;
+                        }
+                        if (replyMessageId) {
+                          wireText = `[CQ:reply,id=${replyMessageId}]${wireText}`;
                         }
                         void sendMessage({
                           mode: "text",
                           text,
-                          wireText: convertAtAndReplyLabelToCqText(convertFaceLabelToCqText(text)),
+                          wireText,
                         });
                       }}
                     >
@@ -2538,9 +2963,75 @@ export default function App() {
                         {message.segments.map((segment, idx) => renderMessageSegment(segment, idx))}
                       </div>
                       <div className="message-time">{formatTime(message.timestamp)}</div>
+                      {message.suggestionSelectable && (
+                        <div
+                          className="suggest-send-options"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                          }}
+                        >
+                          <div className="suggest-send-option-group">
+                            <label className="suggest-send-toggle">
+                              <input
+                                type="radio"
+                                className="suggest-send-toggle-input"
+                                checked={(suggestSendOptionsByMessageId[message.id] || { reply: true, at: false }).reply}
+                                onClick={() => {
+                                  setSuggestSendOptionsByMessageId((prev) => ({
+                                    ...prev,
+                                    [message.id]: {
+                                      ...(prev[message.id] || { reply: true, at: false }),
+                                      reply: !(prev[message.id] || { reply: true, at: false }).reply,
+                                    },
+                                  }));
+                                }}
+                                onChange={() => undefined}
+                              />
+                              回复
+                            </label>
+                          </div>
+                          <div
+                            className="suggest-send-option-group"
+                            aria-disabled={selectedSession.type !== "group"}
+                            title={selectedSession.type !== "group" ? "仅群聊可用 @" : ""}
+                          >
+                            <label className="suggest-send-toggle">
+                              <input
+                                type="radio"
+                                className="suggest-send-toggle-input"
+                                disabled={selectedSession.type !== "group"}
+                                checked={(suggestSendOptionsByMessageId[message.id] || { reply: true, at: false }).at}
+                                onClick={() => {
+                                  if (selectedSession.type !== "group") return;
+                                  setSuggestSendOptionsByMessageId((prev) => ({
+                                    ...prev,
+                                    [message.id]: {
+                                      ...(prev[message.id] || { reply: true, at: false }),
+                                      at: !(prev[message.id] || { reply: true, at: false }).at,
+                                    },
+                                  }));
+                                }}
+                                onChange={() => undefined}
+                              />
+                              @
+                            </label>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
+                {suggestPickActive && suggestPickArrow && (
+                  <div
+                    className="suggest-pick-arrow"
+                    style={{
+                      top: `${suggestPickArrow.top}px`,
+                      left: `${suggestPickArrow.left}px`,
+                    }}
+                  >
+                    ➤
+                  </div>
+                )}
                 <div ref={messageEndRef} />
               </div>
 
@@ -2582,9 +3073,10 @@ export default function App() {
                 <div className="composer-actions">
                   <div className="suggestion-actions">
                     <button
+                      ref={generateBtnRef}
                       className="btn-generate"
                       disabled={selectedSuggestBusy}
-                      onClick={() => void requestSmartSuggestions()}
+                      onPointerDown={onGeneratePointerDown}
                     >
                       {selectedSuggestBusy ? "生成中..." : "生成建议"}
                     </button>
@@ -2593,6 +3085,9 @@ export default function App() {
                     </button>
                     <button disabled={sendBusy} onClick={() => void sendVideo()}>
                       视频
+                    </button>
+                    <button disabled={sendBusy} onClick={() => void sendFile()}>
+                      文件
                     </button>
                     <button disabled={sendBusy} onClick={() => void sendFace()}>
                       表情
@@ -2623,6 +3118,42 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              {(suggestTargetLink || suggestPickLink) && (
+                <div className="suggest-target-link-layer" aria-hidden>
+                  <svg width="100%" height="100%" preserveAspectRatio="none">
+                    <defs>
+                      <marker
+                        id="suggest-target-link-arrowhead"
+                        markerWidth="8"
+                        markerHeight="8"
+                        refX="7"
+                        refY="4"
+                        orient="auto"
+                      >
+                        <polygon points="0,0 8,4 0,8" className="suggest-target-link-head" />
+                      </marker>
+                    </defs>
+                    {suggestTargetLink && (
+                      <path
+                        className="suggest-target-link-path"
+                        d={`M ${suggestTargetLink.x1} ${suggestTargetLink.y1} Q ${(suggestTargetLink.x1 + suggestTargetLink.x2) / 2} ${
+                          Math.min(suggestTargetLink.y1, suggestTargetLink.y2) - 42
+                        } ${suggestTargetLink.x2} ${suggestTargetLink.y2}`}
+                        markerEnd="url(#suggest-target-link-arrowhead)"
+                      />
+                    )}
+                    {suggestPickLink && (
+                      <path
+                        className="suggest-pick-link-path"
+                        d={`M ${suggestPickLink.x1} ${suggestPickLink.y1} Q ${(suggestPickLink.x1 + suggestPickLink.x2) / 2} ${
+                          Math.min(suggestPickLink.y1, suggestPickLink.y2) - 32
+                        } ${suggestPickLink.x2} ${suggestPickLink.y2}`}
+                        markerEnd="url(#suggest-target-link-arrowhead)"
+                      />
+                    )}
+                  </svg>
+                </div>
+              )}
             </>
           )}
         </section>
@@ -2761,7 +3292,7 @@ export default function App() {
             <section className="settings-section">
               <div className="settings-section-head">
                 <h3>Prompt 设置</h3>
-                <span>完全由你定义提示词</span>
+                <span>系统提示词承载上下文，用户提示词用于补充要求</span>
               </div>
               <div className="settings-grid">
                 <label className="span-2">
@@ -2774,11 +3305,11 @@ export default function App() {
                       autoResizeTextarea(e.currentTarget);
                       setSettings((prev) => ({ ...prev, promptSystem: e.target.value }));
                     }}
-                    placeholder="完整 system prompt（不再内置硬编码）"
+                    placeholder={"可用占位符: {session_type} {history_text} {target_message} {user_name}"}
                   />
                 </label>
                 <label className="span-2">
-                  用户提示词模板
+                  默认用户提示词
                   <textarea
                     ref={promptUserTemplateRef}
                     className="settings-autogrow"
@@ -2787,7 +3318,7 @@ export default function App() {
                       autoResizeTextarea(e.currentTarget);
                       setSettings((prev) => ({ ...prev, promptUserTemplate: e.target.value }));
                     }}
-                    placeholder={"可用占位符: {session_type} {history_text} {latest_message}"}
+                    placeholder="作为每次弹窗的默认补充提示词"
                   />
                 </label>
               </div>
@@ -2870,6 +3401,37 @@ export default function App() {
             <div className="modal-actions">
               <button onClick={() => setShowFaceDialog(false)}>取消</button>
               <button onClick={confirmSendFace}>发送</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showSuggestPromptModal && pendingSuggestTarget && (
+        <div className="modal-mask" onClick={cancelSuggestPromptModal}>
+          <div className="modal suggest-prompt-modal" onClick={(e) => e.stopPropagation()}>
+            <h2>补充提示词</h2>
+            <p className="modal-note">目标消息：{pendingSuggestTarget.preview}</p>
+            <label>
+              本次用户提示词（已预填默认提示词，可修改）
+              <textarea
+                ref={suggestPromptRef}
+                className="settings-autogrow"
+                value={suggestPromptInput}
+                onChange={(e) => {
+                  autoResizeTextarea(e.currentTarget, 110);
+                  setSuggestPromptInput(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    confirmSuggestPromptModal();
+                  }
+                }}
+                placeholder="例如：语气更坚定一些；给出可执行下一步；不要太客套"
+              />
+            </label>
+            <div className="modal-actions">
+              <button onClick={cancelSuggestPromptModal}>取消</button>
+              <button onClick={confirmSuggestPromptModal}>生成建议</button>
             </div>
           </div>
         </div>

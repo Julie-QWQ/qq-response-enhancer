@@ -1,0 +1,11 @@
+{
+  "appName": "附带智能回复建议功能的简易QQ客户端",
+  "mainWindowTitle": "附带智能回复建议功能的简易QQ客户端",
+  "mainWindowWidth": 1080,
+  "mainWindowHeight": 760,
+  "mainWindowMinWidth": 860,
+  "mainWindowMinHeight": 620,
+  "suggestionBubbleTitle": "回复建议",
+  "suggestionBubbleWidth": 320,
+  "suggestionBubbleHeight": 420
+}

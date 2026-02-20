@@ -423,6 +423,7 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
 .chat-empty {
@@ -464,6 +465,37 @@ textarea::placeholder {
   margin-top: 3px;
 }
 
+.chat-suggest-target {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(47, 129, 247, 0.45);
+  background: rgba(47, 129, 247, 0.12);
+  color: var(--fg);
+  font-size: 12px;
+  max-width: min(88vw, 560px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-suggest-target-clear {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-suggest-target-clear:hover {
+  border-color: var(--accent);
+}
+
 .message-list {
   flex: 1;
   min-height: 0;
@@ -474,6 +506,7 @@ textarea::placeholder {
   gap: 8px;
   background: var(--chat-bg);
   scroll-behavior: smooth;
+  position: relative;
 }
 
 .suggestion-panel {
@@ -757,6 +790,50 @@ textarea::placeholder {
   border-color: rgba(47, 129, 247, 0.62);
 }
 
+.bubble.bubble-suggest-pick-hover {
+  box-shadow: 0 0 0 2px rgba(255, 166, 87, 0.85), var(--shadow-sm);
+  border-color: rgba(255, 166, 87, 0.9);
+}
+
+.bubble.bubble-suggest-target-pinned {
+  box-shadow: 0 0 0 2px rgba(47, 129, 247, 0.75), var(--shadow-sm);
+}
+
+.suggest-pick-arrow {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  font-size: 20px;
+  line-height: 1;
+  color: #ffa657;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.suggest-target-link-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.suggest-target-link-path {
+  fill: none;
+  stroke: rgba(47, 129, 247, 0.9);
+  stroke-width: 2.2;
+  stroke-dasharray: 6 5;
+}
+
+.suggest-target-link-head {
+  fill: rgba(47, 129, 247, 0.95);
+}
+
+.suggest-pick-link-path {
+  fill: none;
+  stroke: rgba(255, 166, 87, 0.98);
+  stroke-width: 2.6;
+  stroke-dasharray: 5 4;
+}
+
 .message-row.assistant .bubble {
   background: rgba(47, 129, 247, 0.14);
   border-color: rgba(47, 129, 247, 0.4);
@@ -835,11 +912,80 @@ textarea::placeholder {
   background: #000;
 }
 
+.msg-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--subtle);
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 12px;
+  max-width: 100%;
+  word-break: break-all;
+}
+
+.msg-file:hover {
+  border-color: var(--accent);
+  text-decoration: underline;
+}
+
 .message-time {
   margin-top: 4px;
   font-size: 11px;
   color: var(--fg-muted);
   text-align: right;
+}
+
+.suggest-send-options {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+}
+
+.suggest-send-option-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.suggest-send-option-group[aria-disabled="true"] {
+  opacity: 0.5;
+}
+
+.suggest-send-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+  cursor: pointer;
+}
+
+.suggest-send-toggle-input {
+  appearance: auto;
+  -webkit-appearance: radio;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  flex: 0 0 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.suggest-send-toggle-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .empty {
@@ -867,6 +1013,21 @@ textarea::placeholder {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
   animation: modal-in 180ms ease;
+}
+
+.suggest-prompt-modal {
+  width: min(680px, 92vw);
+}
+
+.modal-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--subtle);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .settings-modal {
